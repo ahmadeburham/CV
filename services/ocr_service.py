@@ -1,15 +1,26 @@
-import easyocr
+from pathlib import Path
 
 
-def extract_text(image_path):
+def extract_text(image_path: str) -> dict:
+    path = Path(image_path)
 
-    reader = easyocr.Reader(["ar", "en"])
+    if not path.exists():
+        return {"text": [], "message": f"File not found: {path}"}
 
-    results = reader.readtext(image_path)
+    try:
+        import easyocr
+    except Exception as exc:
+        return {"text": [], "message": f"EasyOCR unavailable: {exc}"}
 
-    extracted_text = []
+    try:
+        reader = easyocr.Reader(["ar", "en"], gpu=False)
+        results = reader.readtext(str(path))
+    except Exception as exc:  # EasyOCR/model loading/read errors
+        return {"text": [], "message": f"OCR failed: {exc}"}
 
-    for r in results:
-        extracted_text.append(r[1])
+    extracted_text = [entry[1] for entry in results]
 
-    return extracted_text
+    return {
+        "text": extracted_text,
+        "message": "OCR extraction completed.",
+    }

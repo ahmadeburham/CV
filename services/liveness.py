@@ -1,36 +1,19 @@
-import os
+def check_liveness(stub_mode: bool = True) -> dict:
+    """
+    Kaggle-safe liveness check.
 
-import cv2
-import mediapipe as mp
+    Kaggle notebooks cannot use webcam capture reliably, so the default behavior
+    is a non-interactive testing bypass.
+    """
+    if stub_mode:
+        return {
+            "live": True,
+            "message": "Liveness bypass enabled for notebook/testing environment.",
+            "mode": "stub",
+        }
 
-
-def check_liveness():
-    """Run liveness check via webcam when explicitly enabled."""
-    if os.getenv("ENABLE_CAMERA") != "1":
-        # Keep local smoke tests/import checks non-interactive by default.
-        return True
-
-    mp_face = mp.solutions.face_mesh
-    cap = cv2.VideoCapture(0)
-
-    with mp_face.FaceMesh() as face_mesh:
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            result = face_mesh.process(rgb)
-
-            if result.multi_face_landmarks:
-                cap.release()
-                cv2.destroyAllWindows()
-                return True
-
-            cv2.imshow("Liveness Check", frame)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
-
-    cap.release()
-    cv2.destroyAllWindows()
-    return False
+    return {
+        "live": False,
+        "message": "Real webcam liveness is disabled in this environment.",
+        "mode": "disabled",
+    }

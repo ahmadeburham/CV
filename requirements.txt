@@ -1,6 +1,5 @@
 fastapi
 uvicorn
 opencv-python
-mediapipe
 deepface
 easyocr
