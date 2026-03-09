@@ -3,3 +3,8 @@ uvicorn
 opencv-python
 deepface
 easyocr
+transformers
+torch
+Pillow
+numpy
+python-multipart

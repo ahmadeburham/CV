@@ -1,19 +1,27 @@
-def check_liveness(stub_mode: bool = True) -> dict:
-    """
-    Kaggle-safe liveness check.
+import os
+from typing import Dict
 
-    Kaggle notebooks cannot use webcam capture reliably, so the default behavior
-    is a non-interactive testing bypass.
-    """
-    if stub_mode:
+
+def check_liveness(stub_mode: bool = False, environment: str = "local") -> Dict:
+    """Modular liveness handler with notebook/kaggle-safe bypass mode."""
+    if stub_mode or environment.lower() in {"notebook", "kaggle"}:
         return {
             "live": True,
-            "message": "Liveness bypass enabled for notebook/testing environment.",
-            "mode": "stub",
+            "mode": "bypass",
+            "message": "Liveness bypass enabled for notebook/Kaggle mode.",
+        }
+
+    # Placeholder for a real liveness provider.
+    provider = os.getenv("LIVENESS_PROVIDER", "disabled")
+    if provider == "disabled":
+        return {
+            "live": False,
+            "mode": "disabled",
+            "message": "Real liveness provider is not configured.",
         }
 
     return {
         "live": False,
-        "message": "Real webcam liveness is disabled in this environment.",
-        "mode": "disabled",
+        "mode": "error",
+        "message": f"Unsupported liveness provider: {provider}",
     }
