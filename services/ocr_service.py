@@ -145,6 +145,10 @@ def extract_text(image_path: str) -> Dict:
     parsed_fields = _parse_fields(raw_text)
     language = _detect_language(raw_text)
 
+def extract_template_fields(image_path: str) -> Dict:
+    """Extract template-centric fields needed for template building workflow."""
+    result = extract_text(image_path)
+    parsed = result.get("parsed_fields", {})
     return {
         "raw_text": raw_text,
         "parsed_fields": parsed_fields,
