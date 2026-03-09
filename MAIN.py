@@ -54,7 +54,6 @@ async def verify_user(
             "message": f"Failed to save uploaded files: {exc}",
         }
 
-    # Loader prefers templates/cleaned if present.
     doc_result = validate_document(str(id_path), template_dir="templates")
 
     liveness_result = check_liveness(
