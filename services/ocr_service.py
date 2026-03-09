@@ -7,9 +7,6 @@ import numpy as np
 import easyocr
 
 
-# Arabic-first OCR reader for Egyptian IDs
-# English is still enabled because some IDs/passports may contain Latin text,
-# but the parsing logic is built around Arabic-first extraction.
 _READER = None
 
 
@@ -33,7 +30,7 @@ def _empty_result(message: str) -> Dict:
             "address": None,
         },
         "language_detected": "unknown",
-        "engine_used": "easyocr_ar_first",
+        "engine_used": "easyocr_ar_first_roi_layout",
         "confidence_summary": {
             "avg_confidence": 0.0,
             "num_segments": 0,
@@ -44,6 +41,7 @@ def _empty_result(message: str) -> Dict:
             "address_lines": [],
             "id_number_line": [],
             "birth_date_line": [],
+            "serial_number_line": [],
         },
     }
 
@@ -55,6 +53,39 @@ def _load_image(image_path: str) -> Optional[np.ndarray]:
     return img
 
 
+def _clean_text_lines(lines: List[str]) -> List[str]:
+    cleaned = []
+    for line in lines:
+        line = str(line).strip()
+        if not line:
+            continue
+        line = line.replace("|", " ").replace("_", " ")
+        line = re.sub(r"\s+", " ", line).strip()
+        if len(line) == 1 and not re.search(r"[\u0600-\u06FFA-Za-z0-9]", line):
+            continue
+        cleaned.append(line)
+    return cleaned
+
+
+def _detect_language(text_lines: List[str]) -> str:
+    text = " ".join(text_lines)
+    has_ar = bool(re.search(r"[\u0600-\u06FF]", text))
+    has_en = bool(re.search(r"[A-Za-z]", text))
+
+    if has_ar and has_en:
+        return "mixed"
+    if has_ar:
+        return "ar"
+    if has_en:
+        return "en"
+    return "unknown"
+
+
+def _normalize_digits(text: str) -> str:
+    eastern_to_western = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+    return text.translate(eastern_to_western)
+
+
 def _preprocess_roi(roi: np.ndarray) -> List[np.ndarray]:
     variants = []
 
@@ -63,17 +94,13 @@ def _preprocess_roi(roi: np.ndarray) -> List[np.ndarray]:
 
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if len(roi.shape) == 3 else roi.copy()
 
-    # Upscale for better OCR on phone photos
     upscaled = cv2.resize(gray, None, fx=2.2, fy=2.2, interpolation=cv2.INTER_CUBIC)
 
-    # Contrast enhancement
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(upscaled)
 
-    # Sharpen
     blurred = cv2.GaussianBlur(clahe, (3, 3), 0)
     sharpened = cv2.addWeighted(clahe, 1.6, blurred, -0.6, 0)
 
-    # Threshold variants
     adaptive = cv2.adaptiveThreshold(
         sharpened,
         255,
@@ -84,7 +111,10 @@ def _preprocess_roi(roi: np.ndarray) -> List[np.ndarray]:
     )
 
     _, otsu = cv2.threshold(
-        sharpened, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        sharpened,
+        0,
+        255,
+        cv2.THRESH_BINARY + cv2.THRESH_OTSU
     )
 
     variants.extend([gray, upscaled, clahe, sharpened, adaptive, otsu])
@@ -123,48 +153,21 @@ def _run_easyocr_best(roi: np.ndarray, paragraph: bool = False) -> Tuple[List[st
     return best_lines, best_conf
 
 
-def _clean_text_lines(lines: List[str]) -> List[str]:
-    cleaned = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        line = re.sub(r"\s+", " ", line)
-        line = line.replace("|", " ").replace("_", " ").strip()
-        if len(line) == 1 and not re.search(r"[\u0600-\u06FFA-Za-z0-9]", line):
-            continue
-        cleaned.append(line)
-    return cleaned
-
-
-def _detect_language(text_lines: List[str]) -> str:
-    text = " ".join(text_lines)
-    has_ar = bool(re.search(r"[\u0600-\u06FF]", text))
-    has_en = bool(re.search(r"[A-Za-z]", text))
-
-    if has_ar and has_en:
-        return "mixed"
-    if has_ar:
-        return "ar"
-    if has_en:
-        return "en"
-    return "unknown"
-
-
-def _normalize_digits(text: str) -> str:
-    eastern_to_western = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
-    return text.translate(eastern_to_western)
-
-
 def _extract_id_number(lines: List[str]) -> Optional[str]:
     candidates = []
+
     for line in lines:
         norm = _normalize_digits(line)
-        nums = re.findall(r"\d{10,20}", norm)
+        norm = norm.replace(" ", "")
+        nums = re.findall(r"\d{12,16}", norm)
         candidates.extend(nums)
 
     if not candidates:
         return None
+
+    exact_14 = [x for x in candidates if len(x) == 14]
+    if exact_14:
+        return exact_14[0]
 
     candidates.sort(key=len, reverse=True)
     return candidates[0]
@@ -173,9 +176,16 @@ def _extract_id_number(lines: List[str]) -> Optional[str]:
 def _extract_birth_date(lines: List[str]) -> Optional[str]:
     for line in lines:
         norm = _normalize_digits(line)
-        match = re.search(r"(\d{1,4}[\/\-]\d{1,2}[\/\-]\d{1,4})", norm)
+        norm = norm.replace(" ", "")
+
+        match = re.search(r"(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})", norm)
         if match:
             return match.group(1)
+
+        match = re.search(r"(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})", norm)
+        if match:
+            return match.group(1)
+
     return None
 
 
@@ -185,14 +195,18 @@ def _pick_name(name_lines: List[str]) -> Optional[str]:
 
     filtered = []
     for line in name_lines:
-        if re.search(r"(جمهورية|بطاقة|تحقيق|الشخصية|العنوان|محل|الإقامة)", line):
+        if re.search(r"(جمهورية|مصر|العربية|بطاقة|تحقيق|الشخصية|الاسم|العنوان|الإقامة)", line):
             continue
-        filtered.append(line)
+        if re.search(r"[\u0600-\u06FF]", line):
+            filtered.append(line)
 
     if not filtered:
         return None
 
-    return " ".join(filtered).strip()
+    text = " ".join(filtered)
+    text = re.sub(r"[^\u0600-\u06FF\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or None
 
 
 def _pick_address(address_lines: List[str]) -> Optional[str]:
@@ -201,14 +215,16 @@ def _pick_address(address_lines: List[str]) -> Optional[str]:
 
     filtered = []
     for line in address_lines:
-        if re.search(r"(رقم|الرقم|القومي|بطاقة|تحقيق الشخصية)", line):
+        if re.search(r"(رقم|الرقم|القومي|بطاقة|تحقيق الشخصية|الاسم)", line):
             continue
         filtered.append(line)
 
     if not filtered:
         return None
 
-    return " - ".join(filtered).strip()
+    text = " - ".join(filtered)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or None
 
 
 def _parse_fields_from_egyptian_layout(
@@ -235,57 +251,51 @@ def _parse_fields_from_egyptian_layout(
 
 def _get_egyptian_id_rois(img: np.ndarray) -> Dict[str, np.ndarray]:
     """
-    Layout tuned to the card form shown by the user:
-    - Left side photo
-    - Under photo: birth date
-    - Right side:
-      first two lines = name
-      next two lines = residence/address
-      last lower-right line = ID number
+    Tuned for the Egyptian ID layout shown by the user.
+
+    Layout:
+    - left photo area
+    - birth date under photo
+    - right upper block = name
+    - right middle block = address
+    - lower-right block = national ID number
+    - lower-left blue strip = card serial (not national id)
     """
     h, w = img.shape[:2]
 
-    # Right-side text block
-    x_right_start = int(w * 0.48)
-    x_right_end = int(w * 0.96)
+    rois = {
+        "name": img[
+            int(h * 0.24):int(h * 0.47),
+            int(w * 0.54):int(w * 0.95)
+        ],
 
-    # Name: upper-right, two lines
-    name_roi = img[
-        int(h * 0.22):int(h * 0.50),
-        x_right_start:x_right_end
-    ]
+        "address": img[
+            int(h * 0.46):int(h * 0.67),
+            int(w * 0.56):int(w * 0.95)
+        ],
 
-    # Address / residence: mid-right, next two lines
-    address_roi = img[
-        int(h * 0.46):int(h * 0.70),
-        x_right_start:x_right_end
-    ]
+        "id_number": img[
+            int(h * 0.67):int(h * 0.86),
+            int(w * 0.50):int(w * 0.96)
+        ],
 
-    # ID number: lower-right line
-    id_roi = img[
-        int(h * 0.68):int(h * 0.92),
-        int(w * 0.50):int(w * 0.98)
-    ]
+        "birth_date": img[
+            int(h * 0.64):int(h * 0.83),
+            int(w * 0.05):int(w * 0.40)
+        ],
 
-    # Birth date: lower-left under photo
-    birth_roi = img[
-        int(h * 0.60):int(h * 0.88),
-        int(w * 0.02):int(w * 0.42)
-    ]
+        "serial_number": img[
+            int(h * 0.83):int(h * 0.97),
+            int(w * 0.04):int(w * 0.33)
+        ],
 
-    # Full card fallback OCR
-    full_roi = img[
-        int(h * 0.10):int(h * 0.95),
-        int(w * 0.02):int(w * 0.98)
-    ]
-
-    return {
-        "name": name_roi,
-        "address": address_roi,
-        "id_number": id_roi,
-        "birth_date": birth_roi,
-        "full": full_roi,
+        "full": img[
+            int(h * 0.18):int(h * 0.96),
+            int(w * 0.03):int(w * 0.97)
+        ],
     }
+
+    return rois
 
 
 def extract_text(image_path: str) -> Dict:
@@ -304,6 +314,7 @@ def extract_text(image_path: str) -> Dict:
         address_lines, address_conf = _run_easyocr_best(rois["address"], paragraph=False)
         id_lines, id_conf = _run_easyocr_best(rois["id_number"], paragraph=False)
         birth_lines, birth_conf = _run_easyocr_best(rois["birth_date"], paragraph=False)
+        serial_lines, serial_conf = _run_easyocr_best(rois["serial_number"], paragraph=False)
         full_lines, full_conf = _run_easyocr_best(rois["full"], paragraph=False)
     except Exception as exc:
         return _empty_result(f"OCR failed: {exc}")
@@ -312,10 +323,9 @@ def extract_text(image_path: str) -> Dict:
     address_lines = _clean_text_lines(address_lines)
     id_lines = _clean_text_lines(id_lines)
     birth_lines = _clean_text_lines(birth_lines)
+    serial_lines = _clean_text_lines(serial_lines)
     full_lines = _clean_text_lines(full_lines)
 
-    # Arabic-first aggregation:
-    # prioritize targeted ROIs first, then use full-card OCR as fallback context
     raw_text = []
     raw_text.extend(name_lines)
     raw_text.extend(address_lines)
@@ -336,9 +346,8 @@ def extract_text(image_path: str) -> Dict:
         all_lines=raw_text,
     )
 
-    avg_conf = np.mean(
-        [x for x in [name_conf, address_conf, id_conf, birth_conf, full_conf] if x > 0]
-    ) if any(x > 0 for x in [name_conf, address_conf, id_conf, birth_conf, full_conf]) else 0.0
+    conf_values = [x for x in [name_conf, address_conf, id_conf, birth_conf, serial_conf, full_conf] if x > 0]
+    avg_conf = float(np.mean(conf_values)) if conf_values else 0.0
 
     return {
         "raw_text": raw_text,
@@ -347,7 +356,7 @@ def extract_text(image_path: str) -> Dict:
         "language_detected": _detect_language(raw_text),
         "engine_used": "easyocr_ar_first_roi_layout",
         "confidence_summary": {
-            "avg_confidence": round(float(avg_conf), 4),
+            "avg_confidence": round(avg_conf, 4),
             "num_segments": len(raw_text),
         },
         "message": "OCR extraction completed using Arabic-first ROI-based EasyOCR.",
@@ -356,6 +365,7 @@ def extract_text(image_path: str) -> Dict:
             "address_lines": address_lines,
             "id_number_line": id_lines,
             "birth_date_line": birth_lines,
+            "serial_number_line": serial_lines,
         },
     }
 
