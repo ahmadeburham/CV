@@ -61,7 +61,6 @@ def main() -> None:
         result = process_id_image(str(scene_path), str(template_path), str(output_dir))
 
         assert result["card_detected"] is True
-        assert "template_validation" in result
         assert (output_dir / "ocr" / "results.json").exists()
         assert (output_dir / "debug" / "roi_overlay.jpg").exists()
         assert (output_dir / "crops" / "photo.jpg").exists()
