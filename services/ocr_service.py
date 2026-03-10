@@ -29,6 +29,9 @@ _EASY_OCR = None
 def _normalize_digits(text: str) -> str:
     return text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
 
+from pathlib import Path
+from typing import Dict, Optional
+import os
 
 def _clean_line(text: str) -> str:
     text = str(text).strip()
@@ -375,7 +378,7 @@ def extract_text(image_path: str) -> Dict:
         "language_detected": _detect_language(raw_text),
         "engine_used": engine_used,
         "confidence_summary": {
-            "avg_confidence": round(avg_conf, 4),
+            "avg_confidence": 0.0,
             "num_segments": len(raw_text),
         },
         "message": message,
@@ -383,6 +386,7 @@ def extract_text(image_path: str) -> Dict:
             "rectified_saved_path": rectified_path,
             "field_crop_paths": crop_paths,
         },
+        "pipeline": pipeline_result,
     }
 
     return result
