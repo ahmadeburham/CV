@@ -1,12 +1,13 @@
-fastapi
-uvicorn
-opencv-python
-deepface
-easyocr
-paddleocr
-paddlepaddle
-transformers
-torch
-Pillow
-numpy
-python-multipart
+
+ fastapi
+ uvicorn
+ opencv-python
+ deepface
+ easyocr
++paddleocr
++paddlepaddle
+ transformers
+ torch
+ Pillow
+ numpy
+ python-multipart
