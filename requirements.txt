@@ -3,6 +3,8 @@ uvicorn
 opencv-python
 deepface
 easyocr
+paddleocr
+paddlepaddle
 transformers
 torch
 Pillow
