@@ -34,19 +34,6 @@ TEMPLATE_ROIS = {
     "text_block_combined": [670, 175, 1235, 590],
 }
 
-VARIABLE_REGIONS_FOR_VALIDATION = [
-    "header_noise",
-    "photo",
-    "name_line_1",
-    "name_line_2",
-    "birthplace",
-    "address",
-    "birth_date",
-    "id_number",
-    "name_combined",
-    "text_block_combined",
-]
-
 OCR_FIELDS = ["name_line_1", "name_line_2", "birthplace", "address", "birth_date", "id_number"]
 NUMERIC_FIELDS = {"birth_date", "id_number"}
 
@@ -84,24 +71,26 @@ def detect_card_quadrilateral(image: np.ndarray) -> Tuple[Optional[np.ndarray], 
     contours = sorted(contours, key=cv2.contourArea, reverse=True)
 
     debug_contours = image.copy()
-    cv2.drawContours(debug_contours, contours[:20], -1, (0, 255, 255), 2)
+    cv2.drawContours(debug_contours, contours[:15], -1, (0, 255, 255), 2)
 
     img_area = image.shape[0] * image.shape[1]
     best_quad = None
 
-    for contour in contours[:50]:
+    for contour in contours[:40]:
         area = cv2.contourArea(contour)
         if area < img_area * 0.10:
             continue
         peri = cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
         if len(approx) == 4:
-            best_quad = approx.reshape(4, 2).astype("float32")
+            quad = approx.reshape(4, 2).astype("float32")
+            best_quad = quad
             break
 
     quad_overlay = image.copy()
     if best_quad is not None:
-        cv2.polylines(quad_overlay, [best_quad.astype(int)], True, (0, 255, 0), 3)
+        points = best_quad.astype(int)
+        cv2.polylines(quad_overlay, [points], True, (0, 255, 0), 3)
 
     return best_quad, {"contours": debug_contours, "detected_quad": quad_overlay, "edges": morphed}
 
@@ -141,7 +130,6 @@ def align_to_template(card_image: np.ndarray, template_image: np.ndarray) -> Tup
     if des1 is not None and des2 is not None and len(kp1) > 20 and len(kp2) > 20:
         matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
         matches = matcher.knnMatch(des1, des2, k=2)
-
         good = []
         for pair in matches:
             if len(pair) != 2:
@@ -158,6 +146,7 @@ def align_to_template(card_image: np.ndarray, template_image: np.ndarray) -> Tup
                 aligned = cv2.warpPerspective(card_image, H, (template_image.shape[1], template_image.shape[0]))
                 return aligned, True
 
+    # ECC fallback
     try:
         warp = np.eye(2, 3, dtype=np.float32)
         criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 100, 1e-5)
@@ -176,91 +165,15 @@ def align_to_template(card_image: np.ndarray, template_image: np.ndarray) -> Tup
 def get_template_rois(template_size: Tuple[int, int] = TEMPLATE_SIZE) -> Dict[str, List[int]]:
     src_w, src_h = TEMPLATE_SIZE
     dst_w, dst_h = template_size
+
     sx = dst_w / src_w
     sy = dst_h / src_h
 
     scaled = {}
-    for name, (x1, y1, x2, y2) in TEMPLATE_ROIS.items():
+    for name, box in TEMPLATE_ROIS.items():
+        x1, y1, x2, y2 = box
         scaled[name] = [int(x1 * sx), int(y1 * sy), int(x2 * sx), int(y2 * sy)]
     return scaled
-
-
-def get_validation_mask(template_shape: Tuple[int, int, int]) -> np.ndarray:
-    h, w = template_shape[:2]
-    rois = get_template_rois((w, h))
-
-    mask = np.full((h, w), 255, dtype=np.uint8)
-    for region in VARIABLE_REGIONS_FOR_VALIDATION:
-        x1, y1, x2, y2 = rois[region]
-        cv2.rectangle(mask, (x1, y1), (x2, y2), 0, -1)
-
-    kernel = np.ones((9, 9), np.uint8)
-    mask = cv2.erode(mask, kernel, iterations=1)
-    return mask
-
-
-def validate_card_against_template(
-    aligned_card: np.ndarray,
-    template_image: np.ndarray,
-    validation_mask: np.ndarray,
-    min_score: float = 0.58,
-) -> Dict[str, object]:
-    aligned_gray = cv2.cvtColor(aligned_card, cv2.COLOR_BGR2GRAY)
-    template_gray = cv2.cvtColor(template_image, cv2.COLOR_BGR2GRAY)
-
-    masked_aligned = cv2.bitwise_and(aligned_gray, aligned_gray, mask=validation_mask)
-    masked_template = cv2.bitwise_and(template_gray, template_gray, mask=validation_mask)
-
-    mask_bool = validation_mask > 0
-    if not np.any(mask_bool):
-        return {
-            "template_match": False,
-            "template_score": 0.0,
-            "method": "ssim_orb_masked",
-            "ssim_like": 0.0,
-            "orb_score": 0.0,
-            "error": "Validation mask removed entire image.",
-            "debug_images": {
-                "validation_mask": validation_mask,
-                "masked_template": masked_template,
-                "masked_aligned_card": masked_aligned,
-            },
-        }
-
-    diff = np.abs(masked_aligned.astype(np.float32) - masked_template.astype(np.float32))
-    mean_diff = float(np.mean(diff[mask_bool]))
-    ssim_like = max(0.0, 1.0 - (mean_diff / 255.0))
-
-    orb = cv2.ORB_create(2000)
-    kp1, des1 = orb.detectAndCompute(masked_aligned, validation_mask)
-    kp2, des2 = orb.detectAndCompute(masked_template, validation_mask)
-
-    orb_score = 0.0
-    if des1 is not None and des2 is not None and len(kp1) >= 8 and len(kp2) >= 8:
-        matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
-        matches = matcher.knnMatch(des1, des2, k=2)
-        good = []
-        for pair in matches:
-            if len(pair) != 2:
-                continue
-            m, n = pair
-            if m.distance < 0.75 * n.distance:
-                good.append(m)
-        orb_score = min(1.0, len(good) / 120.0)
-
-    final_score = round(0.55 * ssim_like + 0.45 * orb_score, 4)
-    return {
-        "template_match": final_score >= min_score,
-        "template_score": final_score,
-        "method": "ssim_orb_masked",
-        "ssim_like": round(ssim_like, 4),
-        "orb_score": round(orb_score, 4),
-        "debug_images": {
-            "validation_mask": validation_mask,
-            "masked_template": masked_template,
-            "masked_aligned_card": masked_aligned,
-        },
-    }
 
 
 def _refine_roi(roi: np.ndarray) -> np.ndarray:
@@ -303,7 +216,8 @@ def preprocess_numeric_roi(roi: np.ndarray) -> np.ndarray:
     up = cv2.resize(gray, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
     denoised = cv2.bilateralFilter(up, 7, 30, 30)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(denoised)
-    return cv2.threshold(clahe, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    otsu = cv2.threshold(clahe, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    return otsu
 
 
 def _get_paddle_reader() -> Optional[object]:
@@ -355,7 +269,8 @@ def _ocr_easy(image: np.ndarray, allowlist: Optional[str] = None) -> str:
 
 def _clean_text(value: str) -> str:
     value = value.replace("|", " ").replace("_", " ")
-    return re.sub(r"\s+", " ", value).strip()
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
 
 
 def _clean_digits(value: str) -> str:
@@ -377,11 +292,15 @@ def run_ocr_on_rois(crops: Dict[str, np.ndarray]) -> Tuple[Dict[str, str], Dict[
 
         if field in NUMERIC_FIELDS:
             proc = preprocess_numeric_roi(roi)
-            text = _ocr_paddle(proc) or _ocr_easy(proc, allowlist="0123456789٠١٢٣٤٥٦٧٨٩/-")
+            text = _ocr_paddle(proc)
+            if not text:
+                text = _ocr_easy(proc, allowlist="0123456789٠١٢٣٤٥٦٧٨٩/-")
             text_clean = _clean_digits(text)
         else:
             proc = preprocess_text_roi(roi)
-            text = _ocr_paddle(proc) or _ocr_easy(proc)
+            text = _ocr_paddle(proc)
+            if not text:
+                text = _ocr_easy(proc)
             text_clean = _clean_text(text)
 
         preprocessed[field] = proc
@@ -435,8 +354,7 @@ def save_debug_outputs(
             cv2.imwrite(str(pre_dir / f"{name}_preprocessed.jpg"), prep)
 
     for name, img in debug_images.items():
-        if img is not None and img.size > 0:
-            cv2.imwrite(str(debug_dir / f"{name}.jpg"), img)
+        cv2.imwrite(str(debug_dir / f"{name}.jpg"), img)
 
 
 def save_json_results(output_dir: Path, result: Dict) -> None:
@@ -447,13 +365,13 @@ def save_json_results(output_dir: Path, result: Dict) -> None:
 
 
 def _combine_fields(cleaned: Dict[str, str]) -> Dict[str, Optional[str]]:
-    full_name = _clean_text(f"{cleaned.get('name_line_1', '')} {cleaned.get('name_line_2', '')}") or None
+    full_name = _clean_text(f"{cleaned.get('name_line_1', '')} {cleaned.get('name_line_2', '')}").strip() or None
     id_num = re.sub(r"\D", "", cleaned.get("id_number", ""))
-    dob = cleaned.get("birth_date") or None
+    dob = cleaned.get("birth_date", "") or None
 
     if len(id_num) >= 14:
-        match = re.search(r"\d{14}", id_num)
-        id_num = match.group(0) if match else id_num[:14]
+        m = re.search(r"\d{14}", id_num)
+        id_num = m.group(0) if m else id_num[:14]
     elif not id_num:
         id_num = None
 
@@ -461,8 +379,8 @@ def _combine_fields(cleaned: Dict[str, str]) -> Dict[str, Optional[str]]:
         "full_name": full_name,
         "birthplace": cleaned.get("birthplace") or None,
         "address": cleaned.get("address") or None,
-        "birth_date": dob,
         "id_number": id_num,
+        "birth_date": dob,
     }
 
 
@@ -476,29 +394,24 @@ def process_id_image(image_path: str, template_path: str, output_dir: str) -> Di
         "template_size": [TEMPLATE_SIZE[0], TEMPLATE_SIZE[1]],
         "card_detected": False,
         "alignment_success": False,
-        "template_validation": {
-            "template_match": False,
-            "template_score": 0.0,
-            "method": "ssim_orb_masked",
-        },
         "fields": {
             "full_name": None,
             "birthplace": None,
             "address": None,
-            "birth_date": None,
             "id_number": None,
+            "birth_date": None,
         },
         "raw_ocr": {
             "name_line_1": "",
             "name_line_2": "",
             "birthplace": "",
             "address": "",
-            "birth_date": "",
             "id_number": "",
+            "birth_date": "",
         },
     }
 
-    debug_images: Dict[str, np.ndarray] = {}
+    debug_images = {}
 
     try:
         image = load_image(image_path)
@@ -525,25 +438,12 @@ def process_id_image(image_path: str, template_path: str, output_dir: str) -> Di
     aligned_card, alignment_success = align_to_template(rectified_card, template)
     result["alignment_success"] = alignment_success
 
-    validation_mask = get_validation_mask(template.shape)
-    validation = validate_card_against_template(aligned_card, template, validation_mask)
-    result["template_validation"] = {
-        "template_match": bool(validation.get("template_match", False)),
-        "template_score": float(validation.get("template_score", 0.0)),
-        "method": str(validation.get("method", "ssim_orb_masked")),
-    }
-
-    debug_images.update(validation.get("debug_images", {}))
-
     rois = get_template_rois((aligned_card.shape[1], aligned_card.shape[0]))
     crops = crop_rois(aligned_card, rois)
 
     raw_ocr, cleaned, preprocessed = run_ocr_on_rois(crops)
     result["raw_ocr"] = raw_ocr
     result["fields"] = _combine_fields(cleaned)
-
-    if not result["template_validation"]["template_match"]:
-        result["error"] = "Template validation failed: card design does not match expected template."
 
     save_debug_outputs(out, raw_card_crop, rectified_card, aligned_card, crops, preprocessed, debug_images, rois)
     save_json_results(out, result)
