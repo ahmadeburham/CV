@@ -4,8 +4,8 @@
  opencv-python
  deepface
  easyocr
-+paddleocr
-+paddlepaddle
+ paddleocr
+ paddlepaddle
  transformers
  torch
  Pillow
